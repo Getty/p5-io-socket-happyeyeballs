@@ -1,0 +1,492 @@
+package IO::Socket::HappyEyeballs;
+# ABSTRACT: RFC 8305 Happy Eyeballs v2 connection algorithm
+
+use strict;
+use warnings;
+use Carp;
+use Errno qw( EINPROGRESS ECONNREFUSED EISCONN );
+use IO::Socket::IP;
+use Socket qw(
+  getaddrinfo getnameinfo
+  AF_INET AF_INET6 AF_UNSPEC
+  SOCK_STREAM IPPROTO_TCP
+  NI_NUMERICHOST NI_NUMERICSERV
+  SOL_SOCKET SO_ERROR
+);
+use IO::Select;
+
+use parent qw(IO::Socket::IP);
+
+our $VERSION = '0.001';
+
+# Class-level cache: { "host:port" => { family => AF_INET6|AF_INET, expires => time } }
+my %_cache;
+my $CACHE_TTL = 600; # 10 minutes
+
+# Default connection attempt delay per RFC 8305 §5: 250ms
+my $DEFAULT_DELAY = 0.250;
+
+my $_override_active;
+
+sub import {
+  my ($class, @args) = @_;
+  for my $arg (@args) {
+    if ($arg eq '-override') {
+      $class->_install_override unless $_override_active;
+    }
+  }
+}
+
+sub _install_override {
+  my ($class) = @_;
+  my $original = IO::Socket::IP->can('new');
+  no warnings 'redefine';
+  *IO::Socket::IP::new = sub {
+    my ($ip_class, %args) = @_;
+    # Only intercept TCP connections with a peer
+    if (($args{PeerHost} || $args{PeerAddr}) && $args{PeerPort}) {
+      my $proto = $args{Proto} || '';
+      my $type  = $args{Type}  || 0;
+      if (!$proto || $proto eq 'tcp' || $type == SOCK_STREAM || !$type) {
+        return IO::Socket::HappyEyeballs->_happy_connect(\%args);
+      }
+    }
+    return $original->($ip_class, %args);
+  };
+  $_override_active = 1;
+}
+
+sub _happy_connect {
+  my ($class, $args) = @_;
+  # Use our Happy Eyeballs algorithm
+  my $peer_host = $args->{PeerHost} || $args->{PeerAddr};
+  my $peer_port = $args->{PeerPort};
+
+  my $delay   = delete $args->{ConnectionAttemptDelay} // $DEFAULT_DELAY;
+  my $timeout = $args->{Timeout} // 30;
+
+  my @addresses = _resolve($peer_host, $peer_port, $args);
+  unless (@addresses) {
+    $@ = "Cannot resolve host '$peer_host': no addresses found";
+    return;
+  }
+
+  @addresses = _sort_addresses(\@addresses, $peer_host, $peer_port);
+
+  my $sock = _attempt_connections(\@addresses, $delay, $timeout, $args);
+
+  if ($sock) {
+    _cache_result($peer_host, $peer_port, $sock->sockdomain);
+    return $sock;
+  }
+
+  $@ = "Cannot connect to $peer_host:$peer_port: all attempts failed";
+  return;
+}
+
+sub new {
+  my ($class, %args) = @_;
+
+  my $peer_host = $args{PeerHost} || $args{PeerAddr}
+    or croak "PeerHost or PeerAddr is required";
+  my $peer_port = $args{PeerPort}
+    or croak "PeerPort is required";
+
+  my $delay   = delete $args{ConnectionAttemptDelay} // $DEFAULT_DELAY;
+  my $timeout = $args{Timeout} // 30;
+
+  # Resolve addresses
+  my @addresses = _resolve($peer_host, $peer_port, \%args);
+  unless (@addresses) {
+    $@ = "Cannot resolve host '$peer_host': no addresses found";
+    return;
+  }
+
+  # Sort with interleaving per RFC 8305 §4
+  @addresses = _sort_addresses(\@addresses, $peer_host, $peer_port);
+
+  # Attempt connections with Happy Eyeballs algorithm
+  my $sock = _attempt_connections(\@addresses, $delay, $timeout, \%args);
+
+  if ($sock) {
+    _cache_result($peer_host, $peer_port, $sock->sockdomain);
+    return $sock;
+  }
+
+  $@ = "Cannot connect to $peer_host:$peer_port: all attempts failed";
+  return;
+}
+
+sub _resolve {
+  my ($host, $port, $args) = @_;
+
+  my %hints = (
+    socktype => SOCK_STREAM,
+    protocol => IPPROTO_TCP,
+    family   => AF_UNSPEC,
+  );
+
+  my ($err, @results) = getaddrinfo($host, $port, \%hints);
+  if ($err) {
+    $@ = "getaddrinfo failed: $err";
+    return;
+  }
+
+  return @results;
+}
+
+sub _sort_addresses {
+  my ($addresses, $host, $port) = @_;
+
+  # Check cache for preferred family
+  my $cache_key = "$host:$port";
+  my $preferred_family;
+  if (my $cached = $_cache{$cache_key}) {
+    if ($cached->{expires} > time()) {
+      $preferred_family = $cached->{family};
+    } else {
+      delete $_cache{$cache_key};
+    }
+  }
+
+  # Separate by address family
+  my (@ipv6, @ipv4);
+  for my $addr (@$addresses) {
+    if ($addr->{family} == AF_INET6) {
+      push @ipv6, $addr;
+    } else {
+      push @ipv4, $addr;
+    }
+  }
+
+  # Interleave: preferred family first, then alternate
+  # Per RFC 8305 §4
+  my @sorted;
+  my ($primary, $secondary);
+  if ($preferred_family && $preferred_family == AF_INET) {
+    $primary   = \@ipv4;
+    $secondary = \@ipv6;
+  } else {
+    $primary   = @ipv6 ? \@ipv6 : \@ipv4;
+    $secondary = @ipv6 ? \@ipv4 : \@ipv6;
+  }
+
+  while (@$primary || @$secondary) {
+    push @sorted, shift @$primary   if @$primary;
+    push @sorted, shift @$secondary if @$secondary;
+  }
+
+  return @sorted;
+}
+
+sub _attempt_connections {
+  my ($addresses, $delay, $timeout, $args) = @_;
+
+  my @pending;     # [ socket, addrinfo ] pairs
+  my $select = IO::Select->new;
+  my $deadline = time() + $timeout;
+  my $next_attempt_time = 0; # start first attempt immediately
+
+  my $addr_idx = 0;
+
+  while ($addr_idx < @$addresses || @pending) {
+    my $now = time();
+    last if $now >= $deadline;
+
+    # Start a new connection attempt if it's time
+    if ($addr_idx < @$addresses && $now >= $next_attempt_time) {
+      my $addr = $addresses->[$addr_idx++];
+      my $sock = _start_connect($addr, $args);
+
+      if ($sock) {
+        # Check if already connected (localhost etc.)
+        if ($sock->connected) {
+          _cleanup_pending(\@pending);
+          _restore_blocking($sock, $args);
+          return $sock;
+        }
+        push @pending, [ $sock, $addr ];
+        $select->add($sock);
+      }
+
+      $next_attempt_time = $now + $delay;
+    }
+
+    next unless @pending;
+
+    # Calculate how long to wait
+    my $wait_time;
+    if ($addr_idx < @$addresses) {
+      # Wait until either a connection succeeds or it's time for the next attempt
+      $wait_time = $next_attempt_time - time();
+      $wait_time = 0 if $wait_time < 0;
+    } else {
+      # No more addresses to try, wait for remaining connections
+      $wait_time = $deadline - time();
+      $wait_time = 0 if $wait_time < 0;
+    }
+
+    # select() for writable (connected) sockets
+    my @ready = IO::Select->select(undef, $select, undef, $wait_time);
+
+    if (@ready && $ready[1]) {
+     for my $sock (@{$ready[1]}) {
+      # Check if the connection actually succeeded
+      my $err = $sock->sockopt(SO_ERROR);
+      if ($err == 0) {
+        # Success! Clean up all other pending sockets
+        my @others = grep { $_->[0] != $sock } @pending;
+        _cleanup_pending(\@others);
+        _restore_blocking($sock, $args);
+
+        return $sock;
+      } else {
+        # This connection failed, remove it
+        $select->remove($sock);
+        $sock->close;
+        @pending = grep { $_->[0] != $sock } @pending;
+      }
+     }
+    }
+  }
+
+  # All failed
+  _cleanup_pending(\@pending);
+  return;
+}
+
+sub _start_connect {
+  my ($addr, $args) = @_;
+
+  my $sock = IO::Socket::IP->new;
+  $sock->socket($addr->{family}, $addr->{socktype}, $addr->{protocol})
+    or return;
+
+  $sock->blocking(0);
+
+  my $rv = CORE::connect($sock, $addr->{addr});
+  if ($rv) {
+    # Connected immediately
+    return $sock;
+  }
+  if ($! == EINPROGRESS) {
+    # Connection in progress — this is the normal non-blocking case
+    return $sock;
+  }
+
+  # Immediate failure
+  $sock->close;
+  return;
+}
+
+sub _restore_blocking {
+  my ($sock, $args) = @_;
+  if (exists $args->{Blocking} && !$args->{Blocking}) {
+    $sock->blocking(0);
+  } else {
+    $sock->blocking(1);
+  }
+}
+
+sub _cleanup_pending {
+  my ($pending) = @_;
+  for my $p (@$pending) {
+    $p->[0]->close if $p->[0];
+  }
+}
+
+sub _cache_result {
+  my ($host, $port, $family) = @_;
+  $_cache{"$host:$port"} = {
+    family  => $family,
+    expires => time() + $CACHE_TTL,
+  };
+}
+
+sub clear_cache {
+  %_cache = ();
+}
+
+sub connection_attempt_delay {
+  my ($class, $new_delay) = @_;
+  if (defined $new_delay) {
+    $DEFAULT_DELAY = $new_delay;
+  }
+  return $DEFAULT_DELAY;
+}
+
+sub cache_ttl {
+  my ($class, $new_ttl) = @_;
+  if (defined $new_ttl) {
+    $CACHE_TTL = $new_ttl;
+  }
+  return $CACHE_TTL;
+}
+
+1;
+
+__END__
+
+=head1 SYNOPSIS
+
+  # Direct usage:
+  use IO::Socket::HappyEyeballs;
+
+  my $sock = IO::Socket::HappyEyeballs->new(
+    PeerHost => 'www.example.com',
+    PeerPort => 80,
+  );
+  die "Cannot connect: $@" unless $sock;
+  print $sock "GET / HTTP/1.0\r\nHost: www.example.com\r\n\r\n";
+
+  # Global override — makes ALL IO::Socket::IP connections use Happy Eyeballs:
+  use IO::Socket::HappyEyeballs -override;
+
+  # Now any code using IO::Socket::IP gets Happy Eyeballs automatically,
+  # including LWP::UserAgent, HTTP::Tiny, Net::Async::HTTP, etc.
+  use HTTP::Tiny;
+  my $response = HTTP::Tiny->new->get('http://www.example.com');
+
+=head1 DESCRIPTION
+
+This module implements the B<Happy Eyeballs> algorithm for establishing TCP
+connections to dual-stack hosts (hosts reachable via both IPv4 and IPv6).
+
+=head2 The problem
+
+As the internet transitions from IPv4 to IPv6, many hosts are reachable via
+both protocols ("dual-stack"). A naive client that tries IPv6 first will
+experience long timeouts (typically 30-75 seconds) when IPv6 connectivity is
+broken — even though IPv4 would work instantly. This is a common situation:
+a host publishes AAAA records but the user's network path to that host over
+IPv6 is broken somewhere along the way.
+
+=head2 The solution: Happy Eyeballs
+
+The Happy Eyeballs algorithm (originally specified in
+L<RFC 6555|https://tools.ietf.org/html/rfc6555>, updated in
+L<RFC 8305|https://tools.ietf.org/html/rfc8305>) solves this by racing
+connection attempts in parallel:
+
+=over
+
+=item 1. B<Resolve> the hostname to all available addresses (both AAAA and A records)
+
+=item 2. B<Sort> the addresses with interleaving — IPv6 first, then alternate between families (e.g. IPv6, IPv4, IPv6, IPv4, ...)
+
+=item 3. B<Start> connecting to the first address (typically IPv6)
+
+=item 4. B<Wait> 250ms — if not connected yet, start connecting to the next address (typically IPv4) I<in parallel>
+
+=item 5. B<Continue> starting new attempts every 250ms while previous ones are still pending
+
+=item 6. B<Return> the first socket that successfully connects, close all others
+
+=item 7. B<Cache> the winning address family so future connections try it first
+
+=back
+
+The 250ms delay is called the B<Connection Attempt Delay>. It is short enough
+to avoid noticeable lag, but long enough to give the preferred address family
+(IPv6) a fair chance to connect first.
+
+=head2 RFC compliance
+
+This module implements B<RFC 8305> ("Happy Eyeballs Version 2: Better
+Connectivity Using Concurrency"), which supersedes the original B<RFC 6555>
+("Happy Eyeballs: Success with Dual-Stack Hosts").
+
+Key RFC 8305 features implemented:
+
+=over
+
+=item * B<Address interleaving> (Section 4) — alternating address families
+
+=item * B<Connection attempt delay> (Section 5) — 250ms default, configurable
+
+=item * B<First-wins> connection racing — parallel non-blocking connects via C<select()>
+
+=item * B<Address family caching> (Section 5.2) — successful family is remembered
+
+=back
+
+=head2 Using the C<-override> import flag
+
+The most powerful way to use this module is with the C<-override> flag:
+
+  use IO::Socket::HappyEyeballs -override;
+
+This transparently replaces C<< IO::Socket::IP->new() >> with the Happy
+Eyeballs algorithm for all outgoing TCP connections in the entire process.
+Any library that uses L<IO::Socket::IP> internally — including L<HTTP::Tiny>,
+L<LWP::UserAgent>, L<Net::Async::HTTP>, L<IO::Async>, and many others —
+will automatically benefit.
+
+Only outgoing TCP connections (those with C<PeerHost>/C<PeerAddr> and
+C<PeerPort>) are intercepted. Listening sockets, UDP sockets, and Unix domain
+sockets are passed through to the original C<IO::Socket::IP> unchanged.
+
+=attr ConnectionAttemptDelay
+
+Time in seconds to wait before starting the next connection attempt.
+Defaults to 0.250 (250ms) per RFC 8305 Section 5. Can be passed to C<new()>.
+
+=attr Timeout
+
+Overall connection timeout in seconds. Defaults to 30.
+
+=method new
+
+  my $sock = IO::Socket::HappyEyeballs->new(%args);
+
+Creates a new socket connection using the Happy Eyeballs v2 algorithm
+(RFC 8305). Accepts the same arguments as L<IO::Socket::IP> plus:
+
+=over
+
+=item ConnectionAttemptDelay
+
+Delay in seconds between connection attempts (default: 0.250).
+
+=back
+
+Returns the connected socket on success, or C<undef> on failure with C<$@>
+set to an error message.
+
+=method clear_cache
+
+  IO::Socket::HappyEyeballs->clear_cache;
+
+Clears the internal address family preference cache.
+
+=method connection_attempt_delay
+
+  IO::Socket::HappyEyeballs->connection_attempt_delay(0.300);
+  my $delay = IO::Socket::HappyEyeballs->connection_attempt_delay;
+
+Get/set the default connection attempt delay in seconds. The default is 0.250
+(250ms) as recommended by RFC 8305 Section 5.
+
+=method cache_ttl
+
+  IO::Socket::HappyEyeballs->cache_ttl(300);
+  my $ttl = IO::Socket::HappyEyeballs->cache_ttl;
+
+Get/set the address family cache TTL in seconds. The default is 600
+(10 minutes). When a successful connection is made, the winning address
+family (IPv4 or IPv6) is cached for this duration. Subsequent connections
+to the same host:port will try the cached family first.
+
+=head1 SEE ALSO
+
+=over
+
+=item * L<RFC 8305 — Happy Eyeballs Version 2: Better Connectivity Using Concurrency|https://tools.ietf.org/html/rfc8305>
+
+=item * L<RFC 6555 — Happy Eyeballs: Success with Dual-Stack Hosts|https://tools.ietf.org/html/rfc6555>
+
+=item * L<IO::Socket::IP> — the parent class
+
+=item * L<IO::Socket::INET> — basic IPv4 socket class (no dual-stack support)
+
+=back
