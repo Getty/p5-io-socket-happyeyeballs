@@ -1,4 +1,4 @@
-{{$NEXT}}
+0.001     2026-03-05 20:26:52Z
 
   - Initial release
   - Implements RFC 8305 (Happy Eyeballs v2) connection algorithm
