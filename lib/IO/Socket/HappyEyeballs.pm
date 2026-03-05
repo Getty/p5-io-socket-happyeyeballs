@@ -17,7 +17,7 @@ use IO::Select;
 
 use parent qw(IO::Socket::IP);
 
-our $VERSION = '0.001';
+our $VERSION = '0.002';
 
 # Class-level cache: { "host:port" => { family => AF_INET6|AF_INET, expires => time } }
 my %_cache;
