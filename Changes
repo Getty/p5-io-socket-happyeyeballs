@@ -1,3 +1,5 @@
+{{$NEXT}}
+
 0.002     2026-03-06 03:14:15Z
 
   - RFC 8305 Section 7.2: Last Resort Local Synthesis for broken AAAA records
