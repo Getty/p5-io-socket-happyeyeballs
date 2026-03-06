@@ -4,6 +4,7 @@
   - NAT64 prefix detection via RFC 7050 (ipv4only.arpa)
   - IPv6 address synthesis from IPv4 via NAT64 prefix
   - New method: last_resort_delay() for configuring synthesis delay (default 2s)
+  - Use AI_ADDRCONFIG for initial resolution, drop it in Last Resort fallback path
 
 0.001     2026-03-05 20:26:52Z
 

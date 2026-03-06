@@ -131,9 +131,18 @@ sub _resolve {
     socktype => SOCK_STREAM,
     protocol => IPPROTO_TCP,
     family   => AF_UNSPEC,
+    flags    => AI_ADDRCONFIG,
   );
 
   my ($err, @results) = getaddrinfo($host, $port, \%hints);
+
+  # If AI_ADDRCONFIG returned nothing (e.g. loopback-only interfaces),
+  # retry without it to avoid filtering out valid addresses.
+  if ($err || !@results) {
+    delete $hints{flags};
+    ($err, @results) = getaddrinfo($host, $port, \%hints);
+  }
+
   if ($err) {
     $@ = "getaddrinfo failed: $err";
     return;
