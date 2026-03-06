@@ -88,6 +88,9 @@ IO::Socket::HappyEyeballs->connection_attempt_delay(0.300);  # 300ms
 # Change cache TTL (default: 600s = 10 minutes)
 IO::Socket::HappyEyeballs->cache_ttl(300);  # 5 minutes
 
+# Change Last Resort Local Synthesis Delay (default: 2s per RFC 8305 §7.2)
+IO::Socket::HappyEyeballs->last_resort_delay(3);
+
 # Clear the address family cache
 IO::Socket::HappyEyeballs->clear_cache;
 ```
@@ -119,6 +122,8 @@ Total time: **255ms** instead of 30+ seconds with naive sequential approach.
 - **Section 5** — Connection Attempt Delay (250ms default)
 - **Section 5** — Parallel non-blocking connection racing via `select()`
 - **Section 5.2** — Caching of successful address family
+- **Section 7.2** — Last Resort Local Synthesis for broken AAAA records (NAT64 via RFC 7050)
+- `AI_ADDRCONFIG` for initial resolution, dropped in Last Resort fallback path
 
 ### Not yet implemented
 
@@ -151,6 +156,11 @@ TEST_HAPPYEYEBALLS_LIVE=1 TEST_HAPPYEYEBALLS_HOST=example.com prove -lv t/80-liv
 
 - [IO::Socket::IP](https://metacpan.org/pod/IO::Socket::IP) — parent class, handles dual-stack but sequentially
 - [Net::Happy::Eyeballs](https://metacpan.org/pod/Net::Happy::Eyeballs) — older attempt (never released)
+- [IO::Socket::Happy::EyeBalls](https://github.com/masanorih/p5-IO-Socket-Happpy-EyeBalls) — earlier implementation that this module builds upon
+
+## Acknowledgements
+
+This module was created because David Leadbeater (DGL) needed it.
 
 ## Author
 

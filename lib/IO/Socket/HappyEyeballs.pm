@@ -496,6 +496,8 @@ __END__
 This module implements the B<Happy Eyeballs> algorithm for establishing TCP
 connections to dual-stack hosts (hosts reachable via both IPv4 and IPv6).
 
+This module was created because David Leadbeater (DGL) needed it.
+
 =head2 The problem
 
 As the internet transitions from IPv4 to IPv6, many hosts are reachable via
@@ -645,5 +647,7 @@ broken AAAA records on IPv6-only networks with NAT64/DNS64.
 =item * L<IO::Socket::IP> — the parent class
 
 =item * L<IO::Socket::INET> — basic IPv4 socket class (no dual-stack support)
+
+=item * L<IO::Socket::Happy::EyeBalls|https://github.com/masanorih/p5-IO-Socket-Happpy-EyeBalls> — earlier Happy Eyeballs implementation that this module builds upon
 
 =back
