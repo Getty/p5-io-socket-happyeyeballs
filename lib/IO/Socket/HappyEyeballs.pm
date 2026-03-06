@@ -7,11 +7,13 @@ use Carp;
 use Errno qw( EINPROGRESS ECONNREFUSED EISCONN );
 use IO::Socket::IP;
 use Socket qw(
-  getaddrinfo getnameinfo
+  getaddrinfo getnameinfo pack_sockaddr_in6 unpack_sockaddr_in6
   AF_INET AF_INET6 AF_UNSPEC
   SOCK_STREAM IPPROTO_TCP
   NI_NUMERICHOST NI_NUMERICSERV
   SOL_SOCKET SO_ERROR
+  AI_ADDRCONFIG
+  inet_pton inet_ntop
 );
 use IO::Select;
 
@@ -25,6 +27,9 @@ my $CACHE_TTL = 600; # 10 minutes
 
 # Default connection attempt delay per RFC 8305 §5: 250ms
 my $DEFAULT_DELAY = 0.250;
+
+# Last Resort Local Synthesis Delay per RFC 8305 §7.2: 2 seconds
+my $LAST_RESORT_DELAY = 2;
 
 my $_override_active;
 
@@ -73,7 +78,8 @@ sub _happy_connect {
 
   @addresses = _sort_addresses(\@addresses, $peer_host, $peer_port);
 
-  my $sock = _attempt_connections(\@addresses, $delay, $timeout, $args);
+  my $sock = _attempt_connections(\@addresses, $delay, $timeout, $args,
+    $peer_host, $peer_port);
 
   if ($sock) {
     _cache_result($peer_host, $peer_port, $sock->sockdomain);
@@ -106,7 +112,8 @@ sub new {
   @addresses = _sort_addresses(\@addresses, $peer_host, $peer_port);
 
   # Attempt connections with Happy Eyeballs algorithm
-  my $sock = _attempt_connections(\@addresses, $delay, $timeout, \%args);
+  my $sock = _attempt_connections(\@addresses, $delay, $timeout, \%args,
+    $peer_host, $peer_port);
 
   if ($sock) {
     _cache_result($peer_host, $peer_port, $sock->sockdomain);
@@ -180,7 +187,7 @@ sub _sort_addresses {
 }
 
 sub _attempt_connections {
-  my ($addresses, $delay, $timeout, $args) = @_;
+  my ($addresses, $delay, $timeout, $args, $host, $port) = @_;
 
   my @pending;     # [ socket, addrinfo ] pairs
   my $select = IO::Select->new;
@@ -188,10 +195,28 @@ sub _attempt_connections {
   my $next_attempt_time = 0; # start first attempt immediately
 
   my $addr_idx = 0;
+  my $last_attempt_time;
+  my $last_resort_done = 0;
 
   while ($addr_idx < @$addresses || @pending) {
     my $now = time();
     last if $now >= $deadline;
+
+    # RFC 8305 §7.2: Last Resort Local Synthesis
+    # When all initial addresses are exhausted and all pending have failed,
+    # wait until $LAST_RESORT_DELAY seconds after last attempt, then try
+    # A-record-only resolution with NAT64 synthesis.
+    if (!$last_resort_done && $addr_idx >= @$addresses && !@pending
+        && $last_attempt_time) {
+      my $synth_addresses = _last_resort_synthesis(
+        $host, $port, $args, $last_attempt_time, $deadline);
+      if ($synth_addresses && @$synth_addresses) {
+        push @$addresses, @$synth_addresses;
+        $last_resort_done = 1;
+        next;  # re-enter loop to process new addresses
+      }
+      $last_resort_done = 1;
+    }
 
     # Start a new connection attempt if it's time
     if ($addr_idx < @$addresses && $now >= $next_attempt_time) {
@@ -209,7 +234,8 @@ sub _attempt_connections {
         $select->add($sock);
       }
 
-      $next_attempt_time = $now + $delay;
+      $last_attempt_time = time();
+      $next_attempt_time = $last_attempt_time + $delay;
     }
 
     next unless @pending;
@@ -295,6 +321,105 @@ sub _cleanup_pending {
   }
 }
 
+# RFC 8305 §7.2: Last Resort Local Synthesis
+# After all AAAA-based attempts fail, wait for the synthesis delay,
+# then query A records and synthesize IPv6 via NAT64 if available.
+sub _last_resort_synthesis {
+  my ($host, $port, $args, $last_attempt_time, $deadline) = @_;
+
+  return unless defined $host && defined $port;
+
+  # Wait until $LAST_RESORT_DELAY after last attempt fired
+  my $synthesis_time = $last_attempt_time + $LAST_RESORT_DELAY;
+  my $now = time();
+  if ($now < $synthesis_time) {
+    my $wait = $synthesis_time - $now;
+    return if $now + $wait > $deadline;
+    select(undef, undef, undef, $wait);
+  }
+
+  # Query A records only (IPv4)
+  my ($err, @ipv4_results) = getaddrinfo($host, $port, {
+    socktype => SOCK_STREAM,
+    protocol => IPPROTO_TCP,
+    family   => AF_INET,
+  });
+  return unless @ipv4_results;
+
+  # Detect NAT64 prefix via RFC 7050 (ipv4only.arpa)
+  my $nat64_prefix = _detect_nat64_prefix();
+
+  if ($nat64_prefix) {
+    # Synthesize IPv6 addresses from IPv4 using NAT64 prefix
+    my @synthesized;
+    for my $r (@ipv4_results) {
+      my $synth = _synthesize_nat64_addr($r, $nat64_prefix, $port);
+      push @synthesized, $synth if $synth;
+    }
+    return \@synthesized if @synthesized;
+  }
+
+  # No NAT64: return IPv4 addresses directly as fallback
+  return \@ipv4_results;
+}
+
+# RFC 7050: Discovery of the IPv6 Prefix Used for IPv6 Address Synthesis
+# Resolve ipv4only.arpa AAAA — if we get results, NAT64 is present
+# and the prefix can be extracted from the response.
+my $_nat64_prefix_cache;
+my $_nat64_prefix_expires = 0;
+
+sub _detect_nat64_prefix {
+  my $now = time();
+  if ($now < $_nat64_prefix_expires) {
+    return $_nat64_prefix_cache;
+  }
+
+  # The well-known IPv4 addresses for ipv4only.arpa are
+  # 192.0.0.170 and 192.0.0.171. If AAAA resolution returns
+  # results, the NAT64 prefix is the first 96 bits.
+  my ($err, @results) = getaddrinfo('ipv4only.arpa', '443', {
+    socktype => SOCK_STREAM,
+    family   => AF_INET6,
+  });
+
+  if (!$err && @results) {
+    my ($synth_port, $synth_addr) = unpack_sockaddr_in6($results[0]{addr});
+    # The well-known address 192.0.0.170 = 0xC0000AA in the last 32 bits
+    # Extract the first 12 bytes as the NAT64 prefix
+    my $prefix = substr($synth_addr, 0, 12);
+    $_nat64_prefix_cache = $prefix;
+    $_nat64_prefix_expires = $now + 600; # cache for 10 minutes
+    return $prefix;
+  }
+
+  $_nat64_prefix_cache = undef;
+  $_nat64_prefix_expires = $now + 60; # negative cache for 1 minute
+  return;
+}
+
+# Synthesize an IPv6 address by combining NAT64 prefix with IPv4 address
+sub _synthesize_nat64_addr {
+  my ($ipv4_addrinfo, $nat64_prefix, $port) = @_;
+
+  # Extract the IPv4 address from the sockaddr
+  my $family = $ipv4_addrinfo->{family};
+  return unless $family == AF_INET;
+
+  my ($ipv4_port, $ipv4_packed) = Socket::unpack_sockaddr_in($ipv4_addrinfo->{addr});
+
+  # Build synthesized IPv6 address: 96-bit prefix + 32-bit IPv4
+  my $synth_ipv6 = $nat64_prefix . $ipv4_packed;
+  my $synth_sockaddr = pack_sockaddr_in6($ipv4_port, $synth_ipv6);
+
+  return {
+    family   => AF_INET6,
+    socktype => SOCK_STREAM,
+    protocol => IPPROTO_TCP,
+    addr     => $synth_sockaddr,
+  };
+}
+
 sub _cache_result {
   my ($host, $port, $family) = @_;
   $_cache{"$host:$port"} = {
@@ -305,6 +430,16 @@ sub _cache_result {
 
 sub clear_cache {
   %_cache = ();
+  $_nat64_prefix_cache = undef;
+  $_nat64_prefix_expires = 0;
+}
+
+sub last_resort_delay {
+  my ($class, $new_delay) = @_;
+  if (defined $new_delay) {
+    $LAST_RESORT_DELAY = $new_delay;
+  }
+  return $LAST_RESORT_DELAY;
 }
 
 sub connection_attempt_delay {
@@ -408,6 +543,8 @@ Key RFC 8305 features implemented:
 
 =item * B<Address family caching> (Section 5.2) — successful family is remembered
 
+=item * B<Last Resort Local Synthesis> (Section 7.2) — handles broken AAAA records via NAT64 synthesis fallback
+
 =back
 
 =head2 Using the C<-override> import flag
@@ -476,6 +613,17 @@ Get/set the address family cache TTL in seconds. The default is 600
 (10 minutes). When a successful connection is made, the winning address
 family (IPv4 or IPv6) is cached for this duration. Subsequent connections
 to the same host:port will try the cached family first.
+
+=method last_resort_delay
+
+  IO::Socket::HappyEyeballs->last_resort_delay(3);
+  my $delay = IO::Socket::HappyEyeballs->last_resort_delay;
+
+Get/set the Last Resort Local Synthesis Delay in seconds per RFC 8305
+Section 7.2. The default is 2 seconds. This is the time to wait after the
+last connection attempt before falling back to A-record-only resolution
+with NAT64 address synthesis. This handles the case of hostnames with
+broken AAAA records on IPv6-only networks with NAT64/DNS64.
 
 =head1 SEE ALSO
 

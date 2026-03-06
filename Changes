@@ -1,5 +1,10 @@
 {{$NEXT}}
 
+  - RFC 8305 Section 7.2: Last Resort Local Synthesis for broken AAAA records
+  - NAT64 prefix detection via RFC 7050 (ipv4only.arpa)
+  - IPv6 address synthesis from IPv4 via NAT64 prefix
+  - New method: last_resort_delay() for configuring synthesis delay (default 2s)
+
 0.001     2026-03-05 20:26:52Z
 
   - Initial release
