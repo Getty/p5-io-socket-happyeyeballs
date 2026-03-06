@@ -648,6 +648,6 @@ broken AAAA records on IPv6-only networks with NAT64/DNS64.
 
 =item * L<IO::Socket::INET> — basic IPv4 socket class (no dual-stack support)
 
-=item * L<IO::Socket::Happy::EyeBalls|https://github.com/masanorih/p5-IO-Socket-Happpy-EyeBalls> — earlier Happy Eyeballs implementation that this module builds upon
+=item * L<IO::Socket::Happpy::EyeBalls|https://github.com/masanorih/p5-IO-Socket-Happpy-EyeBalls> — earlier Happy Eyeballs implementation that this module builds upon (not uploaded to CPAN)
 
 =back

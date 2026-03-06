@@ -156,7 +156,7 @@ TEST_HAPPYEYEBALLS_LIVE=1 TEST_HAPPYEYEBALLS_HOST=example.com prove -lv t/80-liv
 
 - [IO::Socket::IP](https://metacpan.org/pod/IO::Socket::IP) — parent class, handles dual-stack but sequentially
 - [Net::Happy::Eyeballs](https://metacpan.org/pod/Net::Happy::Eyeballs) — older attempt (never released)
-- [IO::Socket::Happy::EyeBalls](https://github.com/masanorih/p5-IO-Socket-Happpy-EyeBalls) — earlier implementation that this module builds upon
+- [IO::Socket::Happpy::EyeBalls](https://github.com/masanorih/p5-IO-Socket-Happpy-EyeBalls) — earlier implementation that this module builds upon (not uploaded to CPAN)
 
 ## Acknowledgements
 
