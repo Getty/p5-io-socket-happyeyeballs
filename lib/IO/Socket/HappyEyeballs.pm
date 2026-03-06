@@ -44,8 +44,21 @@ sub import {
 
 sub _install_override {
   my ($class) = @_;
-  my $original = IO::Socket::IP->can('new');
+  my $original_new = IO::Socket::IP->can('new');
+  my $original_configure = IO::Socket::IP->can('configure');
   no warnings 'redefine';
+
+  # Override configure to skip connect on already-connected sockets.
+  # When a subclass (e.g. Net::HTTP) calls configure after Happy Eyeballs
+  # has already connected, IO::Socket::IP::configure must not reconnect.
+  *IO::Socket::IP::configure = sub {
+    my ($self, $cnf) = @_;
+    if (delete ${*$self}{io_socket_happyeyeballs_connected}) {
+      return $self;
+    }
+    return $original_configure->($self, $cnf);
+  };
+
   *IO::Socket::IP::new = sub {
     my ($ip_class, %args) = @_;
     # Only intercept TCP connections with a peer
@@ -53,10 +66,24 @@ sub _install_override {
       my $proto = $args{Proto} || '';
       my $type  = $args{Type}  || 0;
       if (!$proto || $proto eq 'tcp' || $type == SOCK_STREAM || !$type) {
-        return IO::Socket::HappyEyeballs->_happy_connect(\%args);
+        my $sock = IO::Socket::HappyEyeballs->_happy_connect(\%args);
+        if ($sock) {
+          # For subclasses (e.g. Net::HTTP): rebless and let their
+          # configure run for protocol-specific setup, while our
+          # IO::Socket::IP::configure override skips reconnecting.
+          if ($ip_class ne 'IO::Socket::IP'
+              && $ip_class ne 'IO::Socket::HappyEyeballs'
+              && $ip_class->isa('IO::Socket::IP')) {
+            bless $sock, $ip_class;
+            ${*$sock}{io_socket_happyeyeballs_connected} = 1;
+            $sock->configure(\%args) if $sock->can('configure');
+          }
+          return $sock;
+        }
+        return;
       }
     }
-    return $original->($ip_class, %args);
+    return $original_new->($ip_class, %args);
   };
   $_override_active = 1;
 }

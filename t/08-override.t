@@ -72,6 +72,21 @@ my $sock3 = IO::Socket::HappyEyeballs->new(
 ok($sock3, 'direct HappyEyeballs->new still works with override active');
 $sock3->close if $sock3;
 
+# Test that subclasses of IO::Socket::IP work (e.g. Net::HTTP)
+SKIP: {
+  eval { require Net::HTTP; 1 }
+    or skip 'Net::HTTP not installed', 2;
+
+  my $http_sock = Net::HTTP->new(
+    PeerHost => '127.0.0.1',
+    PeerPort => $port,
+    Timeout  => 5,
+  );
+  ok($http_sock, 'Net::HTTP works through override');
+  isa_ok($http_sock, 'Net::HTTP', 'socket is a Net::HTTP object');
+  $http_sock->close if $http_sock;
+}
+
 # Test that non-TCP (e.g. UDP) is NOT intercepted
 my $udp = IO::Socket::IP->new(
   LocalAddr => '127.0.0.1',
