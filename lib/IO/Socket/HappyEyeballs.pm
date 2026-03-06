@@ -471,7 +471,7 @@ sub cache_ttl {
 
 __END__
 
-=head1 SYNOPSIS
+=synopsis
 
   # Direct usage:
   use IO::Socket::HappyEyeballs;
@@ -491,7 +491,7 @@ __END__
   use HTTP::Tiny;
   my $response = HTTP::Tiny->new->get('http://www.example.com');
 
-=head1 DESCRIPTION
+=description
 
 This module implements the B<Happy Eyeballs> algorithm for establishing TCP
 connections to dual-stack hosts (hosts reachable via both IPv4 and IPv6).
@@ -634,7 +634,7 @@ last connection attempt before falling back to A-record-only resolution
 with NAT64 address synthesis. This handles the case of hostnames with
 broken AAAA records on IPv6-only networks with NAT64/DNS64.
 
-=head1 SEE ALSO
+=seealso
 
 =over
 
