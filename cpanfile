@@ -1,5 +1,6 @@
 requires 'IO::Socket::IP', '0.37';
 requires 'Socket', '2.009';
+requires 'Time::HiRes';
 requires 'IO::Select';
 
 on 'test' => sub {

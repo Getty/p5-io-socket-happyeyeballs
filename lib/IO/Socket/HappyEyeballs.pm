@@ -16,6 +16,7 @@ use Socket qw(
   inet_pton inet_ntop
 );
 use IO::Select;
+use Time::HiRes ();
 
 use parent qw(IO::Socket::IP);
 
@@ -32,6 +33,10 @@ my $DEFAULT_DELAY = 0.250;
 my $LAST_RESORT_DELAY = 2;
 
 my $_override_active;
+
+# Every timing in the attempt loop runs on this clock, in fractional seconds:
+# the attempt delay, the Timeout and the select() wait all share it.
+sub _now { Time::HiRes::time() }
 
 sub import {
   my ($class, @args) = @_;
@@ -233,7 +238,7 @@ sub _attempt_connections {
 
   my @pending;     # [ socket, addrinfo ] pairs
   my $select = IO::Select->new;
-  my $deadline = time() + $timeout;
+  my $deadline = _now() + $timeout;
   my $next_attempt_time = 0; # start first attempt immediately
 
   my $addr_idx = 0;
@@ -241,7 +246,7 @@ sub _attempt_connections {
   my $last_resort_done = 0;
 
   while ($addr_idx < @$addresses || @pending) {
-    my $now = time();
+    my $now = _now();
     last if $now >= $deadline;
 
     # RFC 8305 §7.2: Last Resort Local Synthesis
@@ -276,7 +281,7 @@ sub _attempt_connections {
         $select->add($sock);
       }
 
-      $last_attempt_time = time();
+      $last_attempt_time = _now();
       $next_attempt_time = $last_attempt_time + $delay;
     }
 
@@ -286,11 +291,11 @@ sub _attempt_connections {
     my $wait_time;
     if ($addr_idx < @$addresses) {
       # Wait until either a connection succeeds or it's time for the next attempt
-      $wait_time = $next_attempt_time - time();
+      $wait_time = $next_attempt_time - _now();
       $wait_time = 0 if $wait_time < 0;
     } else {
       # No more addresses to try, wait for remaining connections
-      $wait_time = $deadline - time();
+      $wait_time = $deadline - _now();
       $wait_time = 0 if $wait_time < 0;
     }
 
@@ -373,7 +378,7 @@ sub _last_resort_synthesis {
 
   # Wait until $LAST_RESORT_DELAY after last attempt fired
   my $synthesis_time = $last_attempt_time + $LAST_RESORT_DELAY;
-  my $now = time();
+  my $now = _now();
   if ($now < $synthesis_time) {
     my $wait = $synthesis_time - $now;
     return if $now + $wait > $deadline;
@@ -614,7 +619,7 @@ Defaults to 0.250 (250ms) per RFC 8305 Section 5. Can be passed to C<new()>.
 
 =attr Timeout
 
-Overall connection timeout in seconds. Defaults to 30.
+Overall connection timeout in seconds, fractions allowed. Defaults to 30.
 
 =method new
 
