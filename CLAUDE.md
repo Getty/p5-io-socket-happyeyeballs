@@ -16,7 +16,8 @@ Released to CPAN as `IO-Socket-HappyEyeballs`, built with `Dist::Zilla` via
 ## Delegation
 
 Delegate behavior-relevant code to the right agent instead of touching it yourself —
-the principle and the lane boundaries are in
+the principle is the shared rule `getty-agent-delegation` (skilletor bundle
+`getty-cpan-dist@getty`); lanes and hazards are in
 `.claude/rules/io-socket-happyeyeballs-rules.md`.
 
 | Task | Agent |
