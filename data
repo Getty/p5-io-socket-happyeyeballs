@@ -1,0 +1,30 @@
+---
+claimed_at: 2026-10-25T05:20:20Z
+claimed_by: offen-2610
+class: standard
+completed: 2026-10-25T05:20:20Z
+created: 2026-10-21T02:22:19Z
+id: 5
+priority: medium
+started: 2026-10-25T05:06:38Z
+status: done
+tags:
+- ci
+- github-actions
+title: 'No CI: the distribution has no workflow at all'
+updated: 2026-10-25T05:20:20Z
+---
+
+There is no .github directory in the repository, so nothing runs the test suite on a push and nothing checks the build.
+
+The Author bundle ships a shared composite action for exactly this case, so a Getty distribution needs no test plumbing of its own:
+
+    - uses: Getty/p5-dist-zilla-pluginbundle-author-getty/.github/actions/dzil-test@v1
+
+Work:
+- add .github/workflows/ci.yml as a pure-Perl distribution workflow: trigger on push to all branches, on tags, and on pull_request; a matrix of perl versions in the perl image containers; actions/checkout@v4; then the shared dzil-test action
+- the action installs the dzil plugins through dzil authordeps and the requirements through dzil listdeps; the cpanfile has to list them for that to work
+- the live test needs a network and is skipped by default - the workflow must not set the live switch, the dual stack host it uses is not reachable from every runner
+- the workflow file must not end up in the built distribution; check the tarball after dzil build
+
+Commit b23779a on offen-2610. Verified: built dist has no .github (gather_exclude_match). dzil authordeps lists the bundle and Software::License::Perl_5, so no cpanfile change was needed; live switch not set. Workflow itself not run (no push allowed).
