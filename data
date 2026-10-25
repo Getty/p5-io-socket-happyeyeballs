@@ -1,0 +1,26 @@
+---
+claimed_at: 2026-10-25T05:20:15Z
+claimed_by: offen-2610
+class: standard
+completed: 2026-10-25T05:20:15Z
+created: 2026-10-21T02:22:14Z
+id: 4
+priority: medium
+started: 2026-10-25T05:06:27Z
+status: done
+tags:
+- release
+- dist
+title: 'dzil build aborts: no LICENSE, and the unreleased section of Changes is empty'
+updated: 2026-10-25T05:20:15Z
+---
+
+Two things keep dzil build from working:
+- LICENSE: dzil build aborts with the message from the bundle that no LICENSE is in the distribution. Fix: run dzil genlicense and then stage the file - the stage is not optional, the bundle gathers only tracked files, so an untracked LICENSE fails with the identical message. Verified: with the file staged the build produces the archive.
+- Changes: the unreleased section at the top of the file is empty. The bundle stamps that section with the next version at release time, and the release test then aborts because the section carries no entry line. The section needs at least one entry line describing what is on main and not released yet.
+
+Also missing from dist.ini: author, license, copyright_holder and copyright_year. The bundle fills the author and the license with defaults, but the built META.json comes out without a copyright holder and without a copyright year - the other Getty distributions set all four in dist.ini.
+
+Done when dzil build runs clean and the built Changes carries content.
+
+Commit 093896b on offen-2610. dzil build clean (built into a temp dir), built Changes carries the entries of k1/k2/k3/k6; LICENSE tracked. Note: META.json has no copyright keys by spec; holder and year appear in LICENSE/POD.
