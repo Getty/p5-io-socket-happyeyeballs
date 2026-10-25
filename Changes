@@ -3,6 +3,11 @@
   - The connection attempt delay is now a true 250 ms between two attempts
     instead of whatever was left of the current second; the delay and the
     timeout run on a sub-second clock
+  - The Last Resort Local Synthesis of RFC 8305 Section 7.2 now actually runs
+    after all attempts have failed, instead of never being reached
+  - Without a NAT64 prefix the last resort offers nothing, instead of
+    repeating the IPv4 addresses that already failed; synthesized addresses
+    that were attempted before are skipped
 
 0.002     2026-03-06 03:14:15Z
 

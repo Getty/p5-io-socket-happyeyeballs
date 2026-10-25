@@ -245,24 +245,25 @@ sub _attempt_connections {
   my $last_attempt_time;
   my $last_resort_done = 0;
 
-  while ($addr_idx < @$addresses || @pending) {
+  while (1) {
     my $now = _now();
     last if $now >= $deadline;
 
     # RFC 8305 §7.2: Last Resort Local Synthesis
     # When all initial addresses are exhausted and all pending have failed,
     # wait until $LAST_RESORT_DELAY seconds after last attempt, then try
-    # A-record-only resolution with NAT64 synthesis.
-    if (!$last_resort_done && $addr_idx >= @$addresses && !@pending
-        && $last_attempt_time) {
+    # A-record-only resolution with NAT64 synthesis. Addresses that were
+    # already attempted are not tried again.
+    if ($addr_idx >= @$addresses && !@pending) {
+      last if $last_resort_done || !defined $last_attempt_time;
+      $last_resort_done = 1;
       my $synth_addresses = _last_resort_synthesis(
         $host, $port, $args, $last_attempt_time, $deadline);
       if ($synth_addresses && @$synth_addresses) {
-        push @$addresses, @$synth_addresses;
-        $last_resort_done = 1;
-        next;  # re-enter loop to process new addresses
+        my %seen = map { $_->{addr} => 1 } @$addresses;
+        push @$addresses, grep { !$seen{$_->{addr}} } @$synth_addresses;
       }
-      $last_resort_done = 1;
+      next;  # re-enter the loop: new addresses are attempted, none ends it
     }
 
     # Start a new connection attempt if it's time
@@ -285,7 +286,12 @@ sub _attempt_connections {
       $next_attempt_time = $last_attempt_time + $delay;
     }
 
-    next unless @pending;
+    unless (@pending) {
+      # Nothing to wait for but the next attempt slot
+      my $idle = $next_attempt_time - _now();
+      select(undef, undef, undef, $idle) if $idle > 0;
+      next;
+    }
 
     # Calculate how long to wait
     my $wait_time;
@@ -370,7 +376,8 @@ sub _cleanup_pending {
 
 # RFC 8305 §7.2: Last Resort Local Synthesis
 # After all AAAA-based attempts fail, wait for the synthesis delay,
-# then query A records and synthesize IPv6 via NAT64 if available.
+# then query A records and synthesize IPv6 via NAT64 if available. Without
+# a NAT64 prefix there is nothing to offer and nothing is returned.
 sub _last_resort_synthesis {
   my ($host, $port, $args, $last_attempt_time, $deadline) = @_;
 
@@ -406,8 +413,9 @@ sub _last_resort_synthesis {
     return \@synthesized if @synthesized;
   }
 
-  # No NAT64: return IPv4 addresses directly as fallback
-  return \@ipv4_results;
+  # No NAT64: there is no IPv6 address to synthesize, and the A records are
+  # the addresses the first round already attempted — nothing to offer.
+  return;
 }
 
 # RFC 7050: Discovery of the IPv6 Prefix Used for IPv6 Address Synthesis
@@ -422,9 +430,9 @@ sub _detect_nat64_prefix {
     return $_nat64_prefix_cache;
   }
 
-  # The well-known IPv4 addresses for ipv4only.arpa are
-  # 192.0.0.170 and 192.0.0.171. If AAAA resolution returns
-  # results, the NAT64 prefix is the first 96 bits.
+  # The well-known IPv4 addresses for ipv4only.arpa are 192.0.0.170
+  # (0xC00000AA) and 192.0.0.171 (0xC00000AB), RFC 7050 §2.2. If AAAA
+  # resolution returns results, the NAT64 prefix is the first 96 bits.
   my ($err, @results) = getaddrinfo('ipv4only.arpa', '443', {
     socktype => SOCK_STREAM,
     family   => AF_INET6,
@@ -432,7 +440,7 @@ sub _detect_nat64_prefix {
 
   if (!$err && @results) {
     my ($synth_port, $synth_addr) = unpack_sockaddr_in6($results[0]{addr});
-    # The well-known address 192.0.0.170 = 0xC0000AA in the last 32 bits
+    # The well-known address 192.0.0.170 = 0xC00000AA is in the last 32 bits
     # Extract the first 12 bytes as the NAT64 prefix
     my $prefix = substr($synth_addr, 0, 12);
     $_nat64_prefix_cache = $prefix;
@@ -672,7 +680,9 @@ Get/set the Last Resort Local Synthesis Delay in seconds per RFC 8305
 Section 7.2. The default is 2 seconds. This is the time to wait after the
 last connection attempt before falling back to A-record-only resolution
 with NAT64 address synthesis. This handles the case of hostnames with
-broken AAAA records on IPv6-only networks with NAT64/DNS64.
+broken AAAA records on IPv6-only networks with NAT64/DNS64. On a network
+without a NAT64 prefix the fallback has nothing to offer and the connection
+fails; addresses that were already attempted are never tried a second time.
 
 =seealso
 
