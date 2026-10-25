@@ -1,0 +1,30 @@
+---
+claimed_at: 2026-10-25T05:20:11Z
+claimed_by: offen-2610
+class: standard
+completed: 2026-10-25T05:20:11Z
+created: 2026-10-21T02:22:10Z
+id: 3
+priority: high
+started: 2026-10-25T05:06:18Z
+status: done
+tags:
+- bug
+- rfc8305
+title: The connection attempt delay is not 250 ms - the timing runs on a one-second
+  clock
+updated: 2026-10-25T05:20:11Z
+---
+
+The delay between two connection attempts is specified as 250 ms, but the timing runs on the builtin time function, which has a one-second resolution, while the delay is a fraction of a second.
+
+The next attempt is scheduled at the integer second of the previous attempt plus the delay, and the comparison is done against another integer second. The gap between two attempts is therefore whatever is left of the current second. Measured with two attempts: 0.118 s, 0.517 s and 0.431 s - never 0.250 s. The delay can be almost zero, which defeats the purpose of giving the first family a head start, and it can be a full second, which is longer than the RFC allows.
+
+Work:
+- do the timing with a sub-second clock (Time::HiRes) and keep the deadline in the same unit
+- the connection attempt delay of 250 ms and the timeout in seconds are both public knobs - the conversion has to happen in exactly one place
+- the wait in the select call has to use the same clock, otherwise the select and the deadline drift apart
+- add a test that measures the gap between two attempts and asserts it is close to the configured delay; use a small delay such as 0.05 s so the test stays fast
+- the accessor and the per-call argument keep working unchanged
+
+Commit cc7b347 on offen-2610. t/10-attempt-delay.t red on old lib (only 1 attempt in 0.6s), green now. Suite 59 tests.
