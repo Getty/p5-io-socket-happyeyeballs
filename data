@@ -1,0 +1,28 @@
+---
+claimed_at: 2026-10-25T05:20:25Z
+claimed_by: offen-2610
+class: standard
+completed: 2026-10-25T05:20:25Z
+created: 2026-10-21T02:22:24Z
+id: 6
+priority: medium
+started: 2026-10-25T05:06:49Z
+status: done
+tags:
+- bug
+- rfc8305
+title: The IPv4 fallback of the last resort path repeats the addresses of the first
+  round
+updated: 2026-10-25T05:20:25Z
+---
+
+When the last resort path finds no NAT64 prefix, it falls back to the plain A records of the host. Those are the same addresses the first round already used and that already failed - the resolution at the start asks for both families. On a normal network the fallback therefore tries the same dead addresses a second time and changes nothing.
+
+Work:
+- decide what the fallback is for: on a network without a translator there is no IPv6 address to synthesize, so the honest outcome is that the fallback has nothing to offer
+- do not repeat addresses that were already attempted; if a host resolves only to IPv4, the first round already covered it
+- the NAT64 detection resolves the well known name from RFC 7050 and takes the first 96 bits of the answer. The comment above it names an address and a hex value that do not match that RFC - check both against the RFC and correct the comment
+- the synthesis helper itself is fine and is covered by a test - keep it that way
+- this card belongs with the card that makes the branch reachable; until then the whole path is dead code
+
+Commit b15e9fa on offen-2610. t/11-last-resort-reachable.t red on old lib (synthesis never called), green now; suite 68 tests. Decision: with no NAT64 prefix the helper returns nothing; loop filters addresses already attempted. Also found: _detect_nat64_prefix takes the first 96 bits unconditionally; RFC 7050 allows prefix lengths 32-96 (not fixed, out of scope).
