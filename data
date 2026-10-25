@@ -1,0 +1,30 @@
+---
+claimed_at: 2026-10-25T05:20:06Z
+claimed_by: offen-2610
+class: standard
+completed: 2026-10-25T05:20:06Z
+created: 2026-10-21T02:22:05Z
+id: 2
+priority: high
+started: 2026-10-25T05:06:08Z
+status: done
+tags:
+- bug
+- socket
+title: The socket options never reach the socket - LocalAddr, LocalPort and Reuse
+  are dropped
+updated: 2026-10-25T05:20:06Z
+---
+
+The connect helper creates a bare socket object, calls the socket method on it and connects itself. Every option of IO::Socket::IP is therefore dropped: LocalAddr, LocalPort, ReuseAddr, Type and Proto never arrive at the socket, and the failure is silent - the caller gets a connected socket and no indication that its options were ignored.
+
+Verified: connecting with a fixed LocalPort leaves that port free afterwards, so the option was not applied. Only Blocking survives, and only because the module applies it afterwards by hand.
+
+Work:
+- pass the socket options through to the socket creation, so that LocalAddr, LocalPort, ReuseAddr, Type and Proto reach the kernel
+- the happy eyeballs path may open several sockets for one connection - every attempt needs the same options
+- the options that only make sense for the parent class, such as Listen, must not be silently accepted on a connection attempt
+- add a test: connect to a local listener with a fixed LocalPort and assert that the port is taken afterwards; assert that the socket has the requested type
+- the POD of the new method lists the accepted arguments - extend it accordingly
+
+Commit 75feddc on offen-2610. t/12-socket-options.t red on old lib (LocalPort/ReuseAddr dropped, Listen accepted), green now; suite 76 tests. Decisions: forwarded options = LocalHost/LocalAddr/LocalPort/LocalService/ReuseAddr/ReusePort/V6Only; Type must be SOCK_STREAM (croak otherwise, a raced datagram makes no sense); Proto name/number feeds the getaddrinfo hints; Listen croaks in new(), and the -override leaves Listen calls to the original new. A fixed LocalPort can be bound by one attempt at a time (documented in POD).
