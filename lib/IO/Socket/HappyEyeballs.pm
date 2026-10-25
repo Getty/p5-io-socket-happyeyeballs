@@ -67,7 +67,8 @@ sub _install_override {
   *IO::Socket::IP::new = sub {
     my ($ip_class, %args) = @_;
     # Only intercept TCP connections with a peer
-    if (($args{PeerHost} || $args{PeerAddr}) && $args{PeerPort}) {
+    if (($args{PeerHost} || $args{PeerAddr}) && $args{PeerPort}
+        && !$args{Listen}) {
       my $proto = $args{Proto} || '';
       my $type  = $args{Type}  || 0;
       if (!$proto || $proto eq 'tcp' || $type == SOCK_STREAM || !$type) {
@@ -98,6 +99,7 @@ sub _happy_connect {
   # Use our Happy Eyeballs algorithm
   my $peer_host = $args->{PeerHost} || $args->{PeerAddr};
   my $peer_port = $args->{PeerPort};
+  _check_args($args);
 
   my $delay   = delete $args->{ConnectionAttemptDelay} // $DEFAULT_DELAY;
   my $timeout = $args->{Timeout} // 30;
@@ -129,6 +131,7 @@ sub new {
     or croak "PeerHost or PeerAddr is required";
   my $peer_port = $args{PeerPort}
     or croak "PeerPort is required";
+  _check_args(\%args);
 
   my $delay   = delete $args{ConnectionAttemptDelay} // $DEFAULT_DELAY;
   my $timeout = $args{Timeout} // 30;
@@ -156,6 +159,32 @@ sub new {
   return;
 }
 
+# Options that only make sense for the parent class, or that make no sense for
+# a raced stream connection, are refused instead of being dropped silently.
+sub _check_args {
+  my ($args) = @_;
+  croak "Listen is not supported on a connection attempt" if $args->{Listen};
+  croak "Type must be SOCK_STREAM for a happy eyeballs connection"
+    if $args->{Type} && $args->{Type} != SOCK_STREAM;
+}
+
+sub _protocol {
+  my ($args) = @_;
+  my $proto = $args->{Proto};
+  return IPPROTO_TCP unless defined $proto && length $proto;
+  return $proto if $proto =~ /\A\d+\z/;
+  my $number = getprotobyname($proto);
+  croak "Unknown protocol '$proto'" unless defined $number;
+  return $number;
+}
+
+# The IO::Socket::IP options that shape the local end of every attempt
+sub _socket_options {
+  my ($args) = @_;
+  return map { exists $args->{$_} ? ($_ => $args->{$_}) : () }
+    qw( LocalHost LocalAddr LocalPort LocalService ReuseAddr ReusePort V6Only );
+}
+
 sub _resolve {
   my ($host, $port, $args) = @_;
 
@@ -167,7 +196,7 @@ sub _resolve {
 
   my %hints = (
     socktype => SOCK_STREAM,
-    protocol => IPPROTO_TCP,
+    protocol => _protocol($args),
     family   => AF_UNSPEC,
     ($flags ? (flags => $flags) : ()),
   );
@@ -337,9 +366,13 @@ sub _attempt_connections {
 sub _start_connect {
   my ($addr, $args) = @_;
 
-  my $sock = IO::Socket::IP->new;
-  $sock->socket($addr->{family}, $addr->{socktype}, $addr->{protocol})
-    or return;
+  # Every attempt gets the caller's options: local address and port, reuse
+  my $sock = IO::Socket::IP->new(
+    Family => $addr->{family},
+    Type   => $addr->{socktype},
+    Proto  => $addr->{protocol},
+    _socket_options($args),
+  ) or return;
 
   $sock->blocking(0);
 
