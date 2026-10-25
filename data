@@ -1,0 +1,32 @@
+---
+claimed_at: 2026-10-25T05:20:01Z
+claimed_by: offen-2610
+class: standard
+completed: 2026-10-25T05:20:01Z
+created: 2026-10-21T02:21:59Z
+id: 1
+priority: high
+started: 2026-10-25T05:05:56Z
+status: done
+tags:
+- bug
+- rfc8305
+title: The RFC 8305 section 7.2 last resort branch is unreachable - the feature never
+  runs
+updated: 2026-10-25T05:20:01Z
+---
+
+The last resort synthesis is documented as the headline feature of the module, but it never executes.
+
+The branch at the top of the attempt loop requires two things at once: that all addresses are exhausted, and that no attempt is pending. That is exactly the state in which the while condition of the loop is false, so the loop exits before the branch is ever read. The synthesis helper is never called during a failed connection - verified by wrapping the helper and letting a connection fail: the counter stays at zero.
+
+Work:
+- make the state reachable: the loop has to be able to enter one more round after the initial addresses are exhausted and the pending sockets have failed
+- keep the semantics: the fallback resolves A records only and synthesizes IPv6 addresses through the NAT64 prefix
+- the deadline still applies - if the synthesis would start after the deadline, the attempt is abandoned
+- add a test that fails without the fix: a host that resolves but does not connect, with the last resort delay set to zero, and an assertion that the synthesis helper is called
+- the delay accessor already exists and is tested; the branch has to use the value it returns
+
+Commit b15e9fa on offen-2610. t/11-last-resort-reachable.t red on old lib (synthesis never called), green now; suite 68 tests. Decision: with no NAT64 prefix the helper returns nothing; loop filters addresses already attempted. Also found: _detect_nat64_prefix takes the first 96 bits unconditionally; RFC 7050 allows prefix lengths 32-96 (not fixed, out of scope).
+
+Also found: (a) _detect_nat64_prefix takes the first 96 bits unconditionally, RFC 7050 §3 allows prefix lengths 32-96 and needs the u-octet handling; (b) new() and _happy_connect duplicate the whole connect flow; (c) the override's IO::Socket::IP->new is hit by HappyEyeballs' own socket creation (harmless: no Peer args pass through). Not fixed.
