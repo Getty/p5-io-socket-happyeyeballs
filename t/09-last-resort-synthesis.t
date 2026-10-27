@@ -77,12 +77,13 @@ use IO::Socket::HappyEyeballs;
   IO::Socket::HappyEyeballs->last_resort_delay(0);
 
   my $result = IO::Socket::HappyEyeballs::_last_resort_synthesis(
-    'test.invalid', 80, {},
+    'test.invalid.', 80, {},
     time(),       # last_attempt_time = now
     time() + 5,   # deadline = 5s from now
   );
 
-  # test.invalid should not resolve, so we get undef
+  # test.invalid. should not resolve, so we get undef; the trailing dot keeps
+  # a resolver search domain with a wildcard record from completing the name
   ok(!$result || !@$result, 'synthesis returns nothing for unresolvable host');
 
   IO::Socket::HappyEyeballs->last_resort_delay(2);

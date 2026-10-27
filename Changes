@@ -1,5 +1,8 @@
 {{$NEXT}}
 
+  - The tests for unresolvable hosts use absolute names (a trailing dot), so
+    they pass on hosts whose resolver search domain has a wildcard DNS record
+    (GitHub issue 1)
   - The connection attempt delay is now a true 250 ms between two attempts
     instead of whatever was left of the current second; the delay and the
     timeout run on a sub-second clock
