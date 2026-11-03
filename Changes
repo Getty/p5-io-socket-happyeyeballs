@@ -11,6 +11,9 @@
   - Without a NAT64 prefix the last resort offers nothing, instead of
     repeating the IPv4 addresses that already failed; synthesized addresses
     that were attempted before are skipped
+  - The socket options (Local*, ReuseAddr, ReusePort, V6Only, Proto) now reach
+    every connection attempt; Listen and a Type other than SOCK_STREAM are
+    refused with a clear error
 
 0.002     2026-03-06 03:14:15Z
 
