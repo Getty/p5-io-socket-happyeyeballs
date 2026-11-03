@@ -7,8 +7,8 @@ Used directly, or globally through the `-override` import flag, which makes ever
 `IO::Socket::IP->new` in the process use the algorithm.
 
 One module — `lib/IO/Socket/HappyEyeballs.pm` — a plain subclass of
-`IO::Socket::IP`, plus eleven tests. The algorithm, the override and the known
-traps live in skill `io-socket-happyeyeballs-core` — they are not repeated here.
+`IO::Socket::IP`, plus its tests in `t/`. The algorithm, the override and the
+pinned behaviours live in skill `io-socket-happyeyeballs-core` — they are not repeated here.
 
 Released to CPAN as `IO-Socket-HappyEyeballs`, built with `Dist::Zilla` via
 `[@Author::GETTY]`.
@@ -35,13 +35,13 @@ Work is coordinated on the repo's `karr` board (`karr board`).
 
 ## State of the code
 
-The suite is green: 51 tests in 11 files, the live test skipped unless
-`TEST_HAPPYEYEBALLS_LIVE=1`. The suite covers the surroundings well — sorting,
-caching, the accessors, the blocking modes, the override with a subclass and a UDP
-socket — and the racing itself not at all.
+The suite covers the surroundings — sorting, caching, the accessors, the blocking
+modes, the override with a subclass and a UDP socket — and the attempt logic: the
+250 ms attempt delay, the reachable RFC 8305 §7.2 last resort, and the socket
+options reaching every attempt. The live test is skipped unless
+`TEST_HAPPYEYEBALLS_LIVE=1`.
 
-Four defects are known and recorded on the board: the RFC 8305 §7.2 last resort
-branch is unreachable, the socket options never reach the socket, the attempt
-delay is not the specified 250 ms, and the IPv4 fallback repeats the first round.
-The release path is blocked as well: there is no `LICENSE` file, and the
-unreleased section of `Changes` is empty.
+The distribution is release-shaped: `LICENSE`, `Changes` with an unreleased
+section, `README.md`, `cpanfile` and a GitHub Actions workflow
+(`.github/workflows/ci.yml`) are in the tree, and `dist.ini` carries the header and
+`[@Author::GETTY]`.

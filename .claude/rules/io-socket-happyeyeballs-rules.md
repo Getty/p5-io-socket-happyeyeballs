@@ -22,7 +22,8 @@ first-wins racing, family cache) and the global override — not `README.md` or 
 
 ## Release
 
-The version lives in the module; the unreleased `Changes` is empty.
+The version lives in the module (`our $VERSION`, rewritten by the bundle at release time); the
+unreleased `Changes` section carries the entries of the next release.
 
 ## Hazards — the algorithm is the product, don't regress it silently
 
@@ -32,8 +33,8 @@ The version lives in the module; the unreleased `Changes` is empty.
   user-visible: it needs a `Changes` entry and a test.
 - **The override is process-global and irreversible** — a change there needs a test that shows
   what still works after the patch.
-- **The suite is green, but it does not cover the racing.** Every change to the attempt logic
-  needs a test that fails it.
+- **Every change to the attempt logic needs a test that fails without it** — `t/10-attempt-delay.t`,
+  `t/11-last-resort-reachable.t` and `t/12-socket-options.t` show the pattern.
 - **One class, one module.** A second module, a second object system or a plugin system needs
   a card that asks for it.
 
@@ -42,4 +43,4 @@ The version lives in the module; the unreleased `Changes` is empty.
 Module loading, sub style, error handling, cpanfile pinning, per-file version declarations and
 POD conventions live in `getty-perl-core` and `getty-perl-pod`; the distribution layout and the
 release path live in `perl-release-dist-ini` and `getty-perl-release-author-getty`. The
-algorithm, the override and the known traps live in `io-socket-happyeyeballs-core`.
+algorithm, the override and the pinned behaviours live in `io-socket-happyeyeballs-core`.

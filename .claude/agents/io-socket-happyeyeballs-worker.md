@@ -37,11 +37,10 @@ and the shape of the `-override` flag. A change to any of that is a
 user-visible change: it wants a `Changes` entry under the unreleased section
 naming the effect on a caller, and the POD updated in the same edit.
 
-The four traps in your briefing are the reason the class does not behave like
-the RFC it implements: the last resort branch is unreachable, the socket options
-never reach the socket, the attempt delay is not 250 ms, and the IPv4 fallback
-repeats the first round. Do not paper over them in a test — fix the behaviour
-and let the test pin the fixed behaviour.
+The class follows the RFC where the briefing says so: the last resort branch
+runs, the socket options reach every attempt, the attempt delay is 250 ms and
+the last resort never repeats a round. Tests pin that behaviour; a change that
+breaks one of them is a regression to fix, not a test to adjust.
 
 The global override is the sharpest edge of this distribution: it replaces
 `IO::Socket::IP::new` for the whole process and cannot be undone. Any change
@@ -55,10 +54,9 @@ prove -lr t/     # everything
 dzil test        # the release-path run
 ```
 
-The suite is green today, and it is strong on the surroundings but silent on the
-racing itself: nothing tests that the second address is tried after the delay,
-or that the first successful socket wins and the others are closed. Every change
-to the attempt logic needs a test that fails without it.
+The suite covers the surroundings and the attempt pacing, the last resort and
+the socket options. Every change to the attempt logic needs a test that fails
+without it.
 
 The live test needs a network and is skipped by default. Run it only when the
 card asks for it:
