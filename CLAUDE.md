@@ -25,7 +25,7 @@ the principle is the shared rule `agent-delegation` (skilletor bundle
 | Implement / refactor / debug behavior-relevant code | `io-socket-happyeyeballs-worker` (default) |
 | Commits, `Changes`, card → done, pre-release audit | `io-socket-happyeyeballs-release-manager` |
 
-The agents carry their skills via `briefing.skills` (see `.claude/agents/`); the
+The agents carry their skills via `skills:` (see `.claude/agents/`); the
 main agent delegates rather than loading them. Skill sources live under
 `.claude/skills/` — `getty-perl-core`, `getty-perl-pod` and the karr skills are
 installed from the shared sources; `io-socket-happyeyeballs-core` is owned by this
